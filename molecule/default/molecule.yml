@@ -45,10 +45,14 @@ provisioner:
         # prepare.yml. Reading that file from inside the container is what
         # proves the additional volumes reach the systemd unit rather than
         # being merely declared in defaults/main.yml.
+        #
+        # It is mounted at /etc/swanctl/conf.d, so that the connection snippet
+        # prepare.yml also puts there proves the `include` in swanctl.conf.
         strongswan_molecule_extra_volume_src: /strongswan-molecule-extra
-        strongswan_molecule_extra_volume_dst: /molecule-extra
+        strongswan_molecule_extra_volume_dst: /etc/swanctl/conf.d
         strongswan_molecule_extra_volume_marker: only-a-real-bind-mount-can-read-this
         strongswan_molecule_marker_filename: strongswan-molecule-marker.txt
+        strongswan_molecule_conf_d_connection_name: molecule-conf-d
 
         # The IPsec peer that verify.yml starts next to the role's container, on
         # the role's container network, to establish a real tunnel with it. The
@@ -66,6 +70,11 @@ provisioner:
         # would hide a directory the role left unreadable.
         strongswan_uid: 1717
         strongswan_gid: 1717
+
+        # Neither the role's defaults nor each other's, so that verify.yml can
+        # tell that each host port came from its own variable.
+        strongswan_container_ike_host_bind_port: "51500"
+        strongswan_container_nat_traversal_host_bind_port: "54500"
 
         strongswan_container_additional_volumes_custom:
           - type: bind

@@ -22,7 +22,7 @@ SPDX-License-Identifier: AGPL-3.0-or-later
 
 This is an [Ansible](https://www.ansible.com/) role which installs [strongSwan](https://www.strongswan.org/) to run as a [Docker](https://www.docker.com/) container wrapped in a systemd service.
 
-strongSwan is an IPsec-based VPN solution. The container image used by this role supports IKEv2 only, with the plugins listed in its [Dockerfile](https://github.com/strongX509/docker/blob/master/strongswan/Dockerfile).
+strongSwan is an IPsec-based VPN solution. The container image used by this role supports IKEv2 only, with a limited set of plugins. To list them, run `docker exec strongswan swanctl --stats` on the server once the service is running.
 
 See the project's [documentation](https://docs.strongswan.org/) to learn what strongSwan does and why it might be useful to you.
 
@@ -62,7 +62,7 @@ With the default network, the role publishes `500/udp` and `4500/udp` on the hos
 
 ### Configure connections
 
-To enable the service it is also required to configure at least one connection. The role installs the contents of `strongswan_swanctl_conf` as [`swanctl.conf`](https://docs.strongswan.org/docs/latest/swanctl/swanctlConf.html), which holds the connections, secrets, pools and authorities.
+Connections are configured with `strongswan_swanctl_conf`, which the role installs as [`swanctl.conf`](https://docs.strongswan.org/docs/latest/swanctl/swanctlConf.html). It holds the connections, secrets, pools and authorities.
 
 The example below connects `10.0.1.0/24` behind this host to `10.0.2.0/24` behind the peer, with both sides authenticating with the same pre-shared key. It needs host networking.
 
@@ -112,7 +112,7 @@ strongswan_container_additional_volumes_custom:
     options: readonly
 ```
 
-Configuration snippets mounted at `/etc/swanctl/conf.d` are loaded as well.
+Configuration snippets mounted at `/etc/swanctl/conf.d` are loaded as well, so `strongswan_swanctl_conf` can be left empty if all of the configuration lives there.
 
 ### Extending the configuration
 

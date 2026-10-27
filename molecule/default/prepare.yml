@@ -44,3 +44,24 @@
         content: "{{ strongswan_molecule_extra_volume_marker }}\n"
         dest: "{{ strongswan_molecule_extra_volume_src }}/{{ strongswan_molecule_marker_filename }}"
         mode: "0644"
+
+    # A second connection, loaded only if swanctl.conf includes conf.d. Its
+    # remote address is in TEST-NET-1 (RFC 5737), so it never competes with the
+    # connection the peer in verify.yml initiates.
+    - name: Ensure a connection snippet exists in the strongSwan Molecule additional volume
+      ansible.builtin.copy:
+        dest: "{{ strongswan_molecule_extra_volume_src }}/{{ strongswan_molecule_conf_d_connection_name }}.conf"
+        mode: "0644"
+        content: |
+          connections {
+            {{ strongswan_molecule_conf_d_connection_name }} {
+              version = 2
+              remote_addrs = 192.0.2.1
+              local {
+                auth = psk
+              }
+              remote {
+                auth = psk
+              }
+            }
+          }

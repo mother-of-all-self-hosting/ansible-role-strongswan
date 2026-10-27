@@ -18,6 +18,8 @@
     strongswan_expected_uid: 1717
     strongswan_expected_gid: 1717
     strongswan_expected_timezone: Asia/Tokyo
+    strongswan_expected_ike_host_port: "51500"
+    strongswan_expected_nat_traversal_host_port: "54500"
 
     strongswan_verify_units:
       - strongswan.service
@@ -70,7 +72,7 @@
         # collide with Jinja.
         - name: Inspect the running strongSwan container
           ansible.builtin.command:
-            cmd: docker container inspect strongswan
+            cmd: docker container inspect {{ strongswan_defaults.strongswan_identifier }}
           register: strongswan_container_raw
           changed_when: false
 
@@ -119,7 +121,7 @@
         - name: Read the marker through the additional volume
           ansible.builtin.command:
             cmd: >-
-              docker exec strongswan
+              docker exec {{ strongswan_defaults.strongswan_identifier }}
               cat {{ strongswan_molecule_extra_volume_dst }}/{{ strongswan_molecule_marker_filename }}
           register: strongswan_extra_volume
           changed_when: false
@@ -144,26 +146,32 @@
             success_msg: "The container is read-only with a tmpfs at /run"
 
         # charon manages the kernel's IPsec policies and security associations
-        # over netlink, which is what NET_ADMIN grants, and reads configuration
-        # files owned by the role's uid, which is what DAC_READ_SEARCH grants.
-        # Everything else is dropped.
+        # over netlink, which is what NET_ADMIN grants, reads configuration
+        # files owned by the role's uid, which is what DAC_READ_SEARCH grants,
+        # and binds ports 500 and 4500 under host networking, which is what
+        # NET_BIND_SERVICE grants. Everything else is dropped.
         - name: Assert that the container has exactly the capabilities charon needs
           ansible.builtin.assert:
             that:
               - strongswan_container.HostConfig.CapDrop == ['ALL']
-              - strongswan_container.HostConfig.CapAdd | sort == ['CAP_DAC_READ_SEARCH', 'CAP_NET_ADMIN', 'CAP_NET_BIND_SERVICE', 'CAP_NET_RAW']
+              - strongswan_container.HostConfig.CapAdd | sort == ['CAP_DAC_READ_SEARCH', 'CAP_NET_ADMIN', 'CAP_NET_BIND_SERVICE']
             fail_msg: >-
               The container drops {{ strongswan_container.HostConfig.CapDrop }}
               and adds {{ strongswan_container.HostConfig.CapAdd }}
             success_msg: "The container drops every capability except {{ strongswan_container.HostConfig.CapAdd | join(', ') }}"
 
-        - name: Assert that the IKE and NAT traversal ports are published on the host
+        # The scenario publishes on ports nothing else would pick, so that each
+        # host port can only have come from its own variable, and swapping the
+        # two variables in the systemd unit would not go unnoticed.
+        - name: Assert that the IKE and NAT traversal ports are published on the configured host ports
           ansible.builtin.assert:
             that:
-              - "'500/udp' in strongswan_container.HostConfig.PortBindings"
-              - "'4500/udp' in strongswan_container.HostConfig.PortBindings"
+              - strongswan_container.HostConfig.PortBindings['500/udp'][0].HostPort == strongswan_expected_ike_host_port
+              - strongswan_container.HostConfig.PortBindings['4500/udp'][0].HostPort == strongswan_expected_nat_traversal_host_port
             fail_msg: "The container publishes {{ strongswan_container.HostConfig.PortBindings }}"
-            success_msg: "The container publishes {{ strongswan_container.HostConfig.PortBindings.keys() | join(', ') }}"
+            success_msg: >-
+              The container publishes 500/udp on {{ strongswan_expected_ike_host_port }}
+              and 4500/udp on {{ strongswan_expected_nat_traversal_host_port }}
 
         - name: Assert that the role's timezone reached the container environment
           ansible.builtin.assert:
@@ -190,7 +198,7 @@
         # the container, and reads them thanks to DAC_READ_SEARCH.
         - name: Check the ownership of the rendered configuration files
           ansible.builtin.stat:
-            path: "/strongswan/config/{{ item }}"
+            path: "/{{ strongswan_defaults.strongswan_identifier }}/config/{{ item }}"
           register: strongswan_config_files
           loop:
             - strongswan.conf
@@ -212,7 +220,7 @@
         # charon is up and the socket landed on the tmpfs.
         - name: Wait for the charon daemon to answer over VICI (up to 60s)
           ansible.builtin.command:
-            cmd: docker exec strongswan swanctl --version --daemon
+            cmd: docker exec {{ strongswan_defaults.strongswan_identifier }} swanctl --version --daemon
           register: strongswan_daemon_version
           changed_when: false
           until: strongswan_daemon_version.rc == 0
@@ -231,7 +239,7 @@
         # rendered swanctl.conf.
         - name: List the connections the charon daemon loaded
           ansible.builtin.command:
-            cmd: docker exec strongswan swanctl --list-conns
+            cmd: docker exec {{ strongswan_defaults.strongswan_identifier }} swanctl --list-conns
           register: strongswan_loaded_connections
           changed_when: false
 
@@ -244,6 +252,16 @@
               - "'id: ' ~ strongswan_molecule_peer_id in strongswan_loaded_connections.stdout"
             fail_msg: "The daemon loaded these connections: {{ strongswan_loaded_connections.stdout }}"
             success_msg: "The daemon loaded the {{ strongswan_molecule_connection_name }} connection from the rendered swanctl.conf"
+
+        # prepare.yml put a snippet with a second connection into the additional
+        # volume, which the scenario mounts at /etc/swanctl/conf.d. It can only
+        # have been loaded through the `include` in the rendered swanctl.conf.
+        - name: Assert the daemon loaded the connection from the conf.d snippet
+          ansible.builtin.assert:
+            that:
+              - "strongswan_loaded_connections.stdout is search('^' ~ strongswan_molecule_conf_d_connection_name ~ ': IKEv2', multiline=True)"
+            fail_msg: "The daemon did not load the conf.d snippet: {{ strongswan_loaded_connections.stdout }}"
+            success_msg: "The daemon loaded the {{ strongswan_molecule_conf_d_connection_name }} connection from conf.d"
 
         # ------------------------------------------------------------------
         # A real tunnel, with a peer that initiates to the role's container
@@ -281,7 +299,7 @@
               connections {
                 {{ strongswan_molecule_connection_name }} {
                   version = 2
-                  remote_addrs = strongswan
+                  remote_addrs = {{ strongswan_defaults.strongswan_identifier }}
                   local {
                     auth = psk
                     id = {{ strongswan_molecule_peer_id }}
@@ -314,7 +332,7 @@
             cmd: >-
               docker run --detach --rm
               --name={{ strongswan_molecule_peer_name }}
-              --network=strongswan
+              --network={{ strongswan_defaults.strongswan_identifier }}
               --cap-drop=ALL --cap-add=NET_ADMIN --cap-add=NET_RAW
               --read-only --tmpfs=/run
               --mount type=bind,src={{ strongswan_molecule_peer_path }}/strongswan.conf,dst=/etc/strongswan.conf,ro
@@ -325,7 +343,7 @@
 
         - name: Wait for the tunnel to be established (up to 60s)
           ansible.builtin.command:
-            cmd: docker exec strongswan swanctl --list-sas
+            cmd: docker exec {{ strongswan_defaults.strongswan_identifier }} swanctl --list-sas
           register: strongswan_sas
           changed_when: false
           until: "'ESTABLISHED' in strongswan_sas.stdout and 'INSTALLED' in strongswan_sas.stdout"
@@ -346,13 +364,13 @@
         # which is the difference between a tunnel being negotiated and it carrying traffic.
         - name: Ping the role's container from the peer
           ansible.builtin.command:
-            cmd: docker exec {{ strongswan_molecule_peer_name }} ping -c 3 -W 2 strongswan
+            cmd: docker exec {{ strongswan_molecule_peer_name }} ping -c 3 -W 2 {{ strongswan_defaults.strongswan_identifier }}
           register: strongswan_ping
           changed_when: false
 
         - name: List the security associations again, with their counters
           ansible.builtin.command:
-            cmd: docker exec strongswan swanctl --list-sas
+            cmd: docker exec {{ strongswan_defaults.strongswan_identifier }} swanctl --list-sas
           register: strongswan_sas_after_ping
           changed_when: false
 

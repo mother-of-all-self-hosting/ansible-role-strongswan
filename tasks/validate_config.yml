@@ -16,5 +16,4 @@
     - strongswan_uid
     - strongswan_gid
     - strongswan_container_network
-    - strongswan_swanctl_conf
     - strongswan_conf

@@ -141,6 +141,8 @@ strongswan_container_cleanup_command: |
   exit 1
 
 # Specifies the contents of `swanctl.conf`, which holds the connections, secrets, pools and authorities.
+# Snippets mounted at `/etc/swanctl/conf.d` (see `strongswan_container_additional_volumes`) are loaded too,
+# so this may be left empty when all of the configuration lives there.
 # Documentation: https://docs.strongswan.org/docs/latest/swanctl/swanctlConf.html
 #
 # Example:

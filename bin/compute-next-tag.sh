@@ -11,8 +11,8 @@
 # Tags look like `v<strongSwan version>-<release>`:
 #
 # - if defaults/main.yml points at a strongSwan version that has never been
-#   released, the release counter restarts at 0 (`v0.23.1-0`)
-# - otherwise the counter is incremented (`v0.23.1-1`), but only if something
+#   released, the release counter restarts at 0 (`v6.1.1-0`)
+# - otherwise the counter is incremented (`v6.1.1-1`), but only if something
 #   that actually affects the role has changed since the last release
 #
 # Determining the version from defaults/main.yml, rather than from the commit
@@ -45,7 +45,7 @@ if [ -z "$version" ]; then
 	exit 1
 fi
 
-# strongSwan versions are carried without a leading `v` (e.g. `0.23.1`), while the
+# strongSwan versions are carried without a leading `v` (e.g. `6.1.0`), while the
 # tags of this role have always had one. Stripping a `v` that is not there is
 # harmless, and keeps the tag correct if the upstream style ever changes.
 tag_prefix="v${version#v}-"
