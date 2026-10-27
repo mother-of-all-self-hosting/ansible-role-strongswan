@@ -98,7 +98,7 @@ strongswan_swanctl_conf: |
   }
 ```
 
-To authenticate with certificates instead, mount them into the container under `/etc/swanctl`. Keep them outside of `/strongswan`, which is removed when the service is uninstalled:
+To authenticate with certificates instead, mount them into the container under `/etc/swanctl`:
 
 ```yaml
 strongswan_container_additional_volumes_custom:
