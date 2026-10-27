@@ -1,0 +1,48 @@
+# SPDX-FileCopyrightText: 2026 spatterlight
+#
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+---
+- name: Check existence of strongSwan systemd service
+  ansible.builtin.stat:
+    path: "{{ devture_systemd_docker_base_systemd_path }}/{{ strongswan_identifier }}.service"
+  register: strongswan_service_stat
+
+- name: Uninstall strongSwan systemd services and files
+  when: strongswan_service_stat.stat.exists | bool
+  block:
+    - name: Ensure strongSwan systemd service is stopped
+      ansible.builtin.service:
+        name: "{{ strongswan_identifier }}"
+        state: stopped
+        enabled: false
+        daemon_reload: true
+
+    - name: Ensure strongSwan systemd service does not exist
+      ansible.builtin.file:
+        path: "{{ devture_systemd_docker_base_systemd_path }}/{{ strongswan_identifier }}.service"
+        state: absent
+
+    - name: Ensure strongSwan container network does not exist
+      when: strongswan_container_network_deletion_enabled and strongswan_container_network not in ['', 'host']
+      block:
+        - name: Ensure strongSwan container network does not exist via community.docker.docker_network
+          when: devture_systemd_docker_base_container_network_creation_method == 'ansible-module'
+          community.docker.docker_network:
+            name: "{{ strongswan_container_network }}"
+            state: absent
+          register: strongswan_network_deletion_result
+
+        - name: Ensure strongSwan container network does not exist via ansible.builtin.command
+          when: devture_systemd_docker_base_container_network_creation_method == 'command'
+          ansible.builtin.command:
+            cmd: >-
+              {{ devture_systemd_docker_base_host_command_docker }} network rm
+              {{ strongswan_container_network }}
+          register: strongswan_network_deletion_result
+          changed_when: strongswan_container_network in strongswan_network_deletion_result.stdout
+
+    - name: Ensure strongSwan path does not exist
+      ansible.builtin.file:
+        path: "{{ strongswan_base_path }}"
+        state: absent

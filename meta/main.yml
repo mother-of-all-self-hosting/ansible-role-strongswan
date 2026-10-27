@@ -1,0 +1,22 @@
+---
+galaxy_info:
+  author: spatterlight
+  company: mash
+  role_name: strongswan
+  namespace: mash
+  description: An Ansible role for installing strongSwan, an IPsec-based VPN solution
+  platforms:
+    - name: Debian
+      versions:
+        - all
+    - name: Ubuntu
+      versions:
+        - all
+    - name: ArchLinux
+      versions:
+        - all
+    - name: EL
+      versions:
+        - all
+  license: AGPL-3.0-or-later
+  min_ansible_version: "2.1"
