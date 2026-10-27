@@ -1,4 +1,14 @@
-# SPDX-FileCopyrightText: 2026 spatterlight
+# SPDX-FileCopyrightText: 2020 Scott Crossen
+# SPDX-FileCopyrightText: 2020-2025 Slavi Pantaleev
+# SPDX-FileCopyrightText: 2021 Ahmad Haghighi
+# SPDX-FileCopyrightText: 2021, 2022 MDAD project contributors
+# SPDX-FileCopyrightText: 2022 Marko Weltzer
+# SPDX-FileCopyrightText: 2022-2024 Nikita Chernyi
+# SPDX-FileCopyrightText: 2023 Samuel Meenzen
+# SPDX-FileCopyrightText: 2024 Sergio Durigan Junior
+# SPDX-FileCopyrightText: 2025 MASH project contributors
+# SPDX-FileCopyrightText: 2025, 2026 Suguru Hirahara
+# SPDX-FileCopyrightText: 2025, 2026 spatterlight
 #
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
@@ -37,6 +47,7 @@ strongswan_container_image_self_build_src_files_path: "{{ strongswan_base_path }
 #
 # IPsec tunnels are terminated in the network namespace of the container, so with a dedicated network,
 # only the strongSwan container itself sees the traffic flowing through them.
+# Site-to-site and road warrior setups, where the host or the networks behind it are to use the tunnels, require host networking.
 #
 # Setting `strongswan_container_network` to 'host' will run the container with host networking.
 # strongSwan then manages the IPsec policies of the host, so that the host (and networks it routes for) can use the tunnels.
@@ -70,7 +81,8 @@ strongswan_container_additional_networks_custom: []
 # Contains definition objects like this: `{"type": "bind", "src": "/outside", "dst": "/inside", "options": "readonly"}.
 # See the `--mount` documentation for the `docker run` command.
 #
-# Use this to mount certificates and keys under `/etc/swanctl` (e.g. `/etc/swanctl/x509`, `/etc/swanctl/private`).
+# Use this to mount certificates and keys under `/etc/swanctl` (e.g. `/etc/swanctl/x509`, `/etc/swanctl/private`),
+# or additional swanctl configuration snippets under `/etc/swanctl/conf.d`.
 strongswan_container_additional_volumes: "{{ strongswan_container_additional_volumes_auto + strongswan_container_additional_volumes_custom }}"
 strongswan_container_additional_volumes_auto: []
 strongswan_container_additional_volumes_custom: []

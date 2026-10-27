@@ -8,9 +8,9 @@
 #
 # Usage: bin/compute-next-tag.sh
 #
-# Tags look like `v<Readeck version>-<release>`:
+# Tags look like `v<strongSwan version>-<release>`:
 #
-# - if defaults/main.yml points at a Readeck version that has never been
+# - if defaults/main.yml points at a strongSwan version that has never been
 #   released, the release counter restarts at 0 (`v0.23.1-0`)
 # - otherwise the counter is incremented (`v0.23.1-1`), but only if something
 #   that actually affects the role has changed since the last release
@@ -41,11 +41,11 @@ role_defining_paths=(
 version="$(sed -nE 's|^strongswan_version:[[:space:]]*"?([^"[:space:]]+)"?.*$|\1|p' "$defaults_path" | head -n1)"
 
 if [ -z "$version" ]; then
-	echo >&2 "Could not determine the Readeck version from $defaults_path"
+	echo >&2 "Could not determine the strongSwan version from $defaults_path"
 	exit 1
 fi
 
-# Readeck versions are carried without a leading `v` (e.g. `0.23.1`), while the
+# strongSwan versions are carried without a leading `v` (e.g. `0.23.1`), while the
 # tags of this role have always had one. Stripping a `v` that is not there is
 # harmless, and keeps the tag correct if the upstream style ever changes.
 tag_prefix="v${version#v}-"

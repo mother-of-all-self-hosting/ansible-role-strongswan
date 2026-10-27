@@ -1,8 +1,11 @@
 {#
-SPDX-FileCopyrightText: 2026 spatterlight
+SPDX-FileCopyrightText: 2025, 2026 spatterlight
 
 SPDX-License-Identifier: AGPL-3.0-or-later
 #}
 # swanctl.conf - strongSwan IPsec configuration file
 
 {{ strongswan_swanctl_conf }}
+
+# Include config snippets
+include conf.d/*.conf

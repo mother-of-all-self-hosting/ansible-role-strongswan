@@ -1,4 +1,18 @@
 <!--
+SPDX-FileCopyrightText: 2020 Aaron Raimist
+SPDX-FileCopyrightText: 2020 Chris van Dijk
+SPDX-FileCopyrightText: 2020 Dominik Zajac
+SPDX-FileCopyrightText: 2020 Mickaël Cornière
+SPDX-FileCopyrightText: 2020 Scott Crossen
+SPDX-FileCopyrightText: 2020-2024 MDAD project contributors
+SPDX-FileCopyrightText: 2020-2024 Slavi Pantaleev
+SPDX-FileCopyrightText: 2022 François Darveau
+SPDX-FileCopyrightText: 2022 Julian Foad
+SPDX-FileCopyrightText: 2022 Warren Bailey
+SPDX-FileCopyrightText: 2023 Antonis Christofides
+SPDX-FileCopyrightText: 2023 Felix Stupp
+SPDX-FileCopyrightText: 2023 Pierre 'McFly' Marty
+SPDX-FileCopyrightText: 2024-2026 Suguru Hirahara
 SPDX-FileCopyrightText: 2026 spatterlight
 
 SPDX-License-Identifier: AGPL-3.0-or-later
@@ -70,13 +84,13 @@ strongswan_swanctl_conf: |
   }
 ```
 
-Certificates and keys can be mounted into the container under `/etc/swanctl` (e.g. `/etc/swanctl/x509`, `/etc/swanctl/private`) with the `strongswan_container_additional_volumes_custom` variable.
+Certificates and keys can be mounted into the container under `/etc/swanctl` (e.g. `/etc/swanctl/x509`, `/etc/swanctl/private`) with the `strongswan_container_additional_volumes_custom` variable, as can additional configuration snippets under `/etc/swanctl/conf.d`. Keep them outside of `/strongswan`, which is removed when the service is uninstalled.
 
 ### Configure networking
 
 By default the container runs in its own network and publishes the IKE (`500/udp`) and NAT traversal (`4500/udp`) ports on the host. IPsec tunnels are terminated inside the container, so only the container itself sees the traffic flowing through them. Peers see the published ports as a NAT, so IKE and ESP continue over `4500/udp` (UDP encapsulation).
 
-To let strongSwan manage the IPsec policies of the host instead, so that the host (and networks it routes for) can use the tunnels, run the container with host networking. The firewall has to be adjusted by yourself in this case.
+Site-to-site and road warrior setups, such as the example above, need the host (and networks it routes for) to use the tunnels. For those, run the container with host networking, so that strongSwan manages the IPsec policies of the host instead. The firewall has to be adjusted by yourself in this case.
 
 ```yaml
 strongswan_container_network: host
