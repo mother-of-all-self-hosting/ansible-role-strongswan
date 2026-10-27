@@ -45,13 +45,9 @@ strongswan_container_image_self_build_src_files_path: "{{ strongswan_base_path }
 
 # The base container network. It will be auto-created by this role if it doesn't exist already.
 #
-# IPsec tunnels are terminated in the network namespace of the container, so with a dedicated network,
-# only the strongSwan container itself sees the traffic flowing through them.
-# Site-to-site and road warrior setups, where the host or the networks behind it are to use the tunnels, require host networking.
-#
-# Setting `strongswan_container_network` to 'host' will run the container with host networking.
-# strongSwan then manages the IPsec policies of the host, so that the host (and networks it routes for) can use the tunnels.
-# When running in host-networking mode, you need to adjust the firewall yourself, so that ports are opened.
+# IPsec tunnels end in the network namespace of the container, so on a dedicated network only the container's own traffic can use them.
+# Site-to-site and road warrior setups need 'host' instead, which lets strongSwan manage the IPsec policies of the host itself.
+# With host networking no ports are published, so open them in the firewall yourself.
 strongswan_container_network: "{{ strongswan_identifier }}"
 
 # Control if the container network is deleted on uninstalling.
@@ -64,7 +60,7 @@ strongswan_container_ike_host_bind_port: "{{ '500' if strongswan_container_netwo
 
 # Controls whether the strongSwan container exposes its NAT traversal port (udp/4500 in the container).
 #
-# Peers reaching the container through a published port see a NAT, so IKE and ESP continue over this port (UDP encapsulation).
+# Peers see Docker's port publishing as NAT, so ESP is encapsulated in UDP on this port.
 #
 # Takes an "<ip>:<port>" or "<port>" value (e.g. "4500"), or an empty string to not expose.
 strongswan_container_nat_traversal_host_bind_port: "{{ '4500' if strongswan_container_network != 'host' else '' }}"
@@ -182,8 +178,8 @@ strongswan_swanctl_conf: ""
 # Specifies the contents of `strongswan.conf`, which configures the charon daemon itself.
 # Documentation: https://docs.strongswan.org/docs/latest/config/strongswanConf.html
 #
-# The start scripts load `swanctl.conf` when the daemon starts, and logging goes to stderr
-# (and thus to the systemd journal), as there is no syslog in the container.
+# The value replaces the whole file. Keep the start script, which loads `swanctl.conf` when the daemon starts,
+# and the stderr logging, which sends the logs to the systemd journal (there is no syslog in the container).
 strongswan_conf: |
   charon {
     start-scripts {
