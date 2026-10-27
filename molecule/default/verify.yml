@@ -1,0 +1,476 @@
+# SPDX-FileCopyrightText: 2026 Slavi Pantaleev
+# SPDX-FileCopyrightText: 2026 spatterlight
+# SPDX-FileCopyrightText: 2026 Suguru Hirahara
+#
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+---
+- name: Verify strongSwan
+  hosts: all
+  become: true
+  gather_facts: false
+
+  vars:
+    # The unusual values the scenario configures the role with. Written down
+    # here rather than read back out of the inventory, so that a verify run
+    # compares the running container against something stated, not against
+    # whatever the scenario happens to say at the time.
+    strongswan_expected_uid: 1717
+    strongswan_expected_gid: 1717
+    strongswan_expected_timezone: Asia/Tokyo
+    strongswan_expected_ike_host_port: "51500"
+    strongswan_expected_nat_traversal_host_port: "54500"
+
+    strongswan_verify_units:
+      - strongswan.service
+
+  tasks:
+    - name: Verify that strongSwan works
+      block:
+        # The role is not included in this playbook, so its defaults are not in
+        # scope. Reading defaults/main.yml directly ties the version assertion
+        # below.
+        - name: Load the role defaults
+          ansible.builtin.include_vars:
+            file: "{{ lookup('env', 'MOLECULE_PROJECT_DIRECTORY') }}/defaults/main.yml"
+            name: strongswan_defaults
+
+        - name: Wait for the strongSwan systemd services to become active (up to 180s each)
+          ansible.builtin.systemd_service:
+            name: "{{ item }}"
+          register: strongswan_services
+          until: strongswan_services.status.ActiveState == 'active'
+          retries: 36
+          delay: 5
+          loop: "{{ strongswan_verify_units }}"
+          # So that giving up is reported by the assertion below rather than as a
+          # wall of systemd unit properties.
+          failed_when: false
+
+        # `Restart=always` in the systemd unit means that even a container which crashes
+        # and gets restarted reads as active here, so this is a precondition rather than
+        # a result.
+        - name: Assert the strongSwan systemd services are active
+          ansible.builtin.assert:
+            that: strongswan_services.results | map(attribute='status.ActiveState') | unique | list == ['active']
+            fail_msg: >-
+              Not every service is active:
+              {{ dict(strongswan_verify_units | zip(strongswan_services.results | map(attribute='status.ActiveState'))) }}
+            success_msg: "Every systemd service is active"
+
+        - name: Retrieve the strongSwan systemd services log for debugging
+          when: strongswan_debug_service_enabled | bool
+          ansible.builtin.command:
+            cmd: "journalctl --no-pager --output=cat --unit={{ item }}"
+          changed_when: false
+          loop: "{{ strongswan_verify_units }}"
+
+        # Queried via the docker CLI rather than community.docker.docker_container_info,
+        # because the ansible-lint environment used by pre-commit does not have the
+        # community.docker collection and would fail the syntax check. The full JSON
+        # is parsed here rather than using `--format`, whose Go templating would
+        # collide with Jinja.
+        - name: Inspect the running strongSwan container
+          ansible.builtin.command:
+            cmd: docker container inspect {{ strongswan_defaults.strongswan_identifier }}
+          register: strongswan_container_raw
+          changed_when: false
+
+        - name: Parse the strongSwan container definition
+          ansible.builtin.set_fact:
+            strongswan_container: "{{ (strongswan_container_raw.stdout | from_json)[0] }}"
+
+        # ------------------------------------------------------------------
+        # What the role told Docker to run
+        # ------------------------------------------------------------------
+
+        - name: Collect the mounts the role asked for
+          ansible.builtin.set_fact:
+            strongswan_conf_mount: "{{ strongswan_container.Mounts | selectattr('Destination', 'equalto', '/etc/strongswan.conf') | list }}"
+            strongswan_swanctl_conf_mount: "{{ strongswan_container.Mounts | selectattr('Destination', 'equalto', '/etc/swanctl/swanctl.conf') | list }}"
+            strongswan_extra_mount: "{{ strongswan_container.Mounts | selectattr('Destination', 'equalto', strongswan_molecule_extra_volume_dst) | list }}"
+
+        - name: Assert that the role's configuration files are mounted read-only
+          ansible.builtin.assert:
+            that:
+              - strongswan_conf_mount | length == 1
+              - strongswan_conf_mount[0].Type == 'bind'
+              - not strongswan_conf_mount[0].RW
+              - strongswan_swanctl_conf_mount | length == 1
+              - strongswan_swanctl_conf_mount[0].Type == 'bind'
+              - not strongswan_swanctl_conf_mount[0].RW
+            fail_msg: "The role's configuration files are not bind-mounted read-only: {{ strongswan_container.Mounts }}"
+            success_msg: "strongswan.conf and swanctl.conf are bind-mounted read-only"
+
+        # strongswan_container_additional_volumes_custom has been inert in several roles in
+        # this collection - rendered into a comment, or into a `-v` that silently
+        # dropped the options. Both the destination and the readonly option have
+        # to arrive.
+        - name: Assert that strongswan_container_additional_volumes_custom reached the container
+          ansible.builtin.assert:
+            that:
+              - strongswan_extra_mount | length == 1
+              - strongswan_extra_mount[0].Type == 'bind'
+              - strongswan_extra_mount[0].Source == strongswan_molecule_extra_volume_src
+              - not strongswan_extra_mount[0].RW
+            fail_msg: "The additional volume did not reach the container: {{ strongswan_container.Mounts }}"
+            success_msg: "The additional volume is mounted read-only at {{ strongswan_molecule_extra_volume_dst }}"
+
+        # Reading the file back from inside the
+        # container is the difference between the variable existing and it working.
+        - name: Read the marker through the additional volume
+          ansible.builtin.command:
+            cmd: >-
+              docker exec {{ strongswan_defaults.strongswan_identifier }}
+              cat {{ strongswan_molecule_extra_volume_dst }}/{{ strongswan_molecule_marker_filename }}
+          register: strongswan_extra_volume
+          changed_when: false
+
+        - name: Assert the additional volume is mounted into the strongSwan container
+          ansible.builtin.assert:
+            that:
+              - strongswan_extra_volume.rc == 0
+              - strongswan_extra_volume.stdout | trim == strongswan_molecule_extra_volume_marker
+            fail_msg: "The additional volume did not carry the marker into the container"
+            success_msg: "The additional volume carries the marker into the container"
+
+        - name: Assert that the read-only container still gets its writable /run
+          ansible.builtin.assert:
+            that:
+              - strongswan_container.HostConfig.ReadonlyRootfs
+              - "'/run' in (strongswan_container.HostConfig.Tmpfs | default({}))"
+            fail_msg: >-
+              The container's root filesystem is
+              {{ 'read-only' if strongswan_container.HostConfig.ReadonlyRootfs else 'writable' }}
+              and its tmpfs mounts are {{ strongswan_container.HostConfig.Tmpfs | default({}) }}
+            success_msg: "The container is read-only with a tmpfs at /run"
+
+        # charon manages the kernel's IPsec policies and security associations
+        # over netlink, which is what NET_ADMIN grants, reads configuration
+        # files owned by the role's uid, which is what DAC_READ_SEARCH grants,
+        # and binds ports 500 and 4500 under host networking, which is what
+        # NET_BIND_SERVICE grants. Everything else is dropped.
+        - name: Assert that the container has exactly the capabilities charon needs
+          ansible.builtin.assert:
+            that:
+              - strongswan_container.HostConfig.CapDrop == ['ALL']
+              - strongswan_container.HostConfig.CapAdd | sort == ['CAP_DAC_READ_SEARCH', 'CAP_NET_ADMIN', 'CAP_NET_BIND_SERVICE']
+            fail_msg: >-
+              The container drops {{ strongswan_container.HostConfig.CapDrop }}
+              and adds {{ strongswan_container.HostConfig.CapAdd }}
+            success_msg: "The container drops every capability except {{ strongswan_container.HostConfig.CapAdd | join(', ') }}"
+
+        # The scenario publishes on ports nothing else would pick, so that each
+        # host port can only have come from its own variable, and swapping the
+        # two variables in the systemd unit would not go unnoticed.
+        - name: Assert that the IKE and NAT traversal ports are published on the configured host ports
+          ansible.builtin.assert:
+            that:
+              - strongswan_container.HostConfig.PortBindings['500/udp'][0].HostPort == strongswan_expected_ike_host_port
+              - strongswan_container.HostConfig.PortBindings['4500/udp'][0].HostPort == strongswan_expected_nat_traversal_host_port
+            fail_msg: "The container publishes {{ strongswan_container.HostConfig.PortBindings }}"
+            success_msg: >-
+              The container publishes 500/udp on {{ strongswan_expected_ike_host_port }}
+              and 4500/udp on {{ strongswan_expected_nat_traversal_host_port }}
+
+        - name: Assert that the role's timezone reached the container environment
+          ansible.builtin.assert:
+            that:
+              - ('TZ=' ~ strongswan_expected_timezone) in strongswan_container.Config.Env
+            fail_msg: "templates/env.j2 did not put TZ={{ strongswan_expected_timezone }} on the container"
+            success_msg: "The container environment carries TZ={{ strongswan_expected_timezone }}"
+
+        - name: Assert that the container image is the pinned version
+          ansible.builtin.assert:
+            that:
+              - strongswan_container.Config.Image == 'docker.io/strongx509/strongswan:' ~ strongswan_defaults.strongswan_version
+            fail_msg: >-
+              The container runs {{ strongswan_container.Config.Image }}, not the
+              {{ strongswan_defaults.strongswan_version }} pinned in defaults/main.yml
+            success_msg: "The container runs {{ strongswan_container.Config.Image }}"
+
+        # ------------------------------------------------------------------
+        # What the daemon inside the container actually loaded
+        # ------------------------------------------------------------------
+
+        # The configuration files on the host are owned by the role's uid and gid, with
+        # the secrets in swanctl.conf kept from other users. The daemon runs as root inside
+        # the container, and reads them thanks to DAC_READ_SEARCH.
+        - name: Check the ownership of the rendered configuration files
+          ansible.builtin.stat:
+            path: "/{{ strongswan_defaults.strongswan_identifier }}/config/{{ item }}"
+          register: strongswan_config_files
+          loop:
+            - strongswan.conf
+            - swanctl.conf
+
+        - name: Assert the rendered configuration files are owned by the role's uid and gid
+          ansible.builtin.assert:
+            that:
+              - strongswan_config_files.results | map(attribute='stat.uid') | unique | list == [strongswan_expected_uid]
+              - strongswan_config_files.results | map(attribute='stat.gid') | unique | list == [strongswan_expected_gid]
+              - strongswan_config_files.results | map(attribute='stat.mode') | unique | list == ['0640']
+            fail_msg: >-
+              The configuration files are owned by
+              {{ strongswan_config_files.results | map(attribute='stat.uid') | list }}:{{ strongswan_config_files.results | map(attribute='stat.gid') | list }}
+              with modes {{ strongswan_config_files.results | map(attribute='stat.mode') | list }}
+            success_msg: "The configuration files are owned by {{ strongswan_expected_uid }}:{{ strongswan_expected_gid }} with mode 0640"
+
+        # swanctl talks to the daemon over its VICI socket, so an answer here means
+        # charon is up and the socket landed on the tmpfs.
+        - name: Wait for the charon daemon to answer over VICI (up to 60s)
+          ansible.builtin.command:
+            cmd: docker exec {{ strongswan_defaults.strongswan_identifier }} swanctl --version --daemon
+          register: strongswan_daemon_version
+          changed_when: false
+          until: strongswan_daemon_version.rc == 0
+          retries: 12
+          delay: 5
+
+        - name: Assert the running charon is the version this role installs
+          ansible.builtin.assert:
+            that: "'strongSwan ' ~ strongswan_defaults.strongswan_version ~ ' ' in strongswan_daemon_version.stdout"
+            fail_msg: "charon reports {{ strongswan_daemon_version.stdout }}, expected {{ strongswan_defaults.strongswan_version }}"
+            success_msg: "charon reports {{ strongswan_daemon_version.stdout_lines | first }}"
+
+        # An active unit says little on its own: charon starts fine with an empty
+        # swanctl.conf. The connection can only be known to the daemon if the
+        # start script in the rendered strongswan.conf ran swanctl against the
+        # rendered swanctl.conf.
+        - name: List the connections the charon daemon loaded
+          ansible.builtin.command:
+            cmd: docker exec {{ strongswan_defaults.strongswan_identifier }} swanctl --list-conns
+          register: strongswan_loaded_connections
+          changed_when: false
+
+        - name: Assert the daemon loaded the connection this scenario configured
+          ansible.builtin.assert:
+            that:
+              - "strongswan_loaded_connections.stdout is search('^' ~ strongswan_molecule_connection_name ~ ': IKEv2', multiline=True)"
+              - "'local public key authentication' not in strongswan_loaded_connections.stdout"
+              - "'id: ' ~ strongswan_molecule_local_id in strongswan_loaded_connections.stdout"
+              - "'id: ' ~ strongswan_molecule_peer_id in strongswan_loaded_connections.stdout"
+            fail_msg: "The daemon loaded these connections: {{ strongswan_loaded_connections.stdout }}"
+            success_msg: "The daemon loaded the {{ strongswan_molecule_connection_name }} connection from the rendered swanctl.conf"
+
+        # prepare.yml put a snippet with a second connection into the additional
+        # volume, which the scenario mounts at /etc/swanctl/conf.d. It can only
+        # have been loaded through the `include` in the rendered swanctl.conf.
+        - name: Assert the daemon loaded the connection from the conf.d snippet
+          ansible.builtin.assert:
+            that:
+              - "strongswan_loaded_connections.stdout is search('^' ~ strongswan_molecule_conf_d_connection_name ~ ': IKEv2', multiline=True)"
+            fail_msg: "The daemon did not load the conf.d snippet: {{ strongswan_loaded_connections.stdout }}"
+            success_msg: "The daemon loaded the {{ strongswan_molecule_conf_d_connection_name }} connection from conf.d"
+
+        # ------------------------------------------------------------------
+        # A real tunnel, with a peer that initiates to the role's container
+        # ------------------------------------------------------------------
+
+        - name: Ensure the peer's configuration directory exists
+          ansible.builtin.file:
+            path: "{{ strongswan_molecule_peer_path }}"
+            state: directory
+            mode: "0755"
+
+        - name: Install the peer's strongswan.conf
+          ansible.builtin.copy:
+            dest: "{{ strongswan_molecule_peer_path }}/strongswan.conf"
+            mode: "0644"
+            content: |
+              charon {
+                start-scripts {
+                  swanctl = swanctl --load-all --noprompt
+                }
+                filelog {
+                  stderr {
+                    default = 1
+                  }
+                }
+              }
+
+        # The peer reaches the role's container by its name, which Docker
+        # resolves on the container network the role created.
+        - name: Install the peer's swanctl.conf
+          ansible.builtin.copy:
+            dest: "{{ strongswan_molecule_peer_path }}/swanctl.conf"
+            mode: "0644"
+            content: |
+              connections {
+                {{ strongswan_molecule_connection_name }} {
+                  version = 2
+                  remote_addrs = {{ strongswan_defaults.strongswan_identifier }}
+                  local {
+                    auth = psk
+                    id = {{ strongswan_molecule_peer_id }}
+                  }
+                  remote {
+                    auth = psk
+                    id = {{ strongswan_molecule_local_id }}
+                  }
+                  children {
+                    {{ strongswan_molecule_connection_name }} {
+                      mode = transport
+                      esp_proposals = aes256-sha256
+                      start_action = start
+                    }
+                  }
+                  proposals = aes256-sha256-modp2048
+                }
+              }
+
+              secrets {
+                ike-{{ strongswan_molecule_connection_name }} {
+                  id-1 = {{ strongswan_molecule_local_id }}
+                  id-2 = {{ strongswan_molecule_peer_id }}
+                  secret = "{{ strongswan_molecule_psk }}"
+                }
+              }
+
+        - name: Start the peer on the role's container network
+          ansible.builtin.command:
+            cmd: >-
+              docker run --detach --rm
+              --name={{ strongswan_molecule_peer_name }}
+              --network={{ strongswan_defaults.strongswan_identifier }}
+              --cap-drop=ALL --cap-add=NET_ADMIN --cap-add=NET_RAW
+              --read-only --tmpfs=/run
+              --mount type=bind,src={{ strongswan_molecule_peer_path }}/strongswan.conf,dst=/etc/strongswan.conf,ro
+              --mount type=bind,src={{ strongswan_molecule_peer_path }}/swanctl.conf,dst=/etc/swanctl/swanctl.conf,ro
+              {{ strongswan_container.Config.Image }}
+              /usr/libexec/ipsec/charon
+          changed_when: true
+
+        - name: Wait for the tunnel to be established (up to 60s)
+          ansible.builtin.command:
+            cmd: docker exec {{ strongswan_defaults.strongswan_identifier }} swanctl --list-sas
+          register: strongswan_sas
+          changed_when: false
+          until: "'ESTABLISHED' in strongswan_sas.stdout and 'INSTALLED' in strongswan_sas.stdout"
+          retries: 12
+          delay: 5
+
+        - name: Assert the IKE and child security associations are up with the peer
+          ansible.builtin.assert:
+            that:
+              - "strongswan_sas.stdout is search('^' ~ strongswan_molecule_connection_name ~ ': #[0-9]+, ESTABLISHED, IKEv2', multiline=True)"
+              - "'remote \\'' ~ strongswan_molecule_peer_id ~ '\\'' in strongswan_sas.stdout"
+              - strongswan_sas.stdout is search('INSTALLED, TRANSPORT, ESP:AES_CBC-256/HMAC_SHA2_256_128')
+            fail_msg: "The security associations are: {{ strongswan_sas.stdout }}"
+            success_msg: "An IKEv2 security association with {{ strongswan_molecule_peer_id }} is ESTABLISHED and its transport mode child is INSTALLED"
+
+        # The child security association counts the packets it protects. A ping
+        # from the peer that shows up in those counters went through the tunnel,
+        # which is the difference between a tunnel being negotiated and it carrying traffic.
+        - name: Ping the role's container from the peer
+          ansible.builtin.command:
+            cmd: docker exec {{ strongswan_molecule_peer_name }} ping -c 3 -W 2 {{ strongswan_defaults.strongswan_identifier }}
+          register: strongswan_ping
+          changed_when: false
+
+        - name: List the security associations again, with their counters
+          ansible.builtin.command:
+            cmd: docker exec {{ strongswan_defaults.strongswan_identifier }} swanctl --list-sas
+          register: strongswan_sas_after_ping
+          changed_when: false
+
+        - name: Determine how many packets the tunnel carried inbound
+          ansible.builtin.set_fact:
+            strongswan_tunnel_packets_in: >-
+              {{
+                strongswan_sas_after_ping.stdout
+                | regex_search('in\s+[0-9a-f]+,\s+[0-9]+ bytes,\s+([0-9]+) packets', '\1')
+                | first | int
+              }}
+
+        - name: Assert the ping went through the tunnel
+          ansible.builtin.assert:
+            that:
+              - "'3 received' in strongswan_ping.stdout"
+              - strongswan_tunnel_packets_in | int >= 3
+            fail_msg: >-
+              The peer's ping reported "{{ strongswan_ping.stdout_lines | select('search', 'packets transmitted') | first | default('nothing') }}"
+              and the tunnel carried {{ strongswan_tunnel_packets_in }} packets inbound
+            success_msg: "The peer's 3 pings arrived and the tunnel carried {{ strongswan_tunnel_packets_in }} packets inbound"
+
+        - name: Verify nothing was quietly restarting while all of that was being checked
+          when: "strongswan_restarts_check_enabled | bool"
+          block:
+            # `Restart=always` means the unit reads `active` while it is crash-looping,
+            # so `active` on its own says very little. The window has to be watched with
+            # everything already answering.
+            - name: Sample the restart counters
+              ansible.builtin.systemd_service:
+                name: "{{ item }}"
+              register: strongswan_restarts_before
+              loop: "{{ strongswan_verify_units }}"
+
+            # Comfortably longer than the unit's `RestartSec=30`, so a crash loop has to
+            # tick at least once inside the window.
+            - name: Watch the services for 45 seconds
+              ansible.builtin.pause:
+                seconds: 45
+
+            - name: Sample the restart counters again
+              ansible.builtin.systemd_service:
+                name: "{{ item }}"
+              register: strongswan_restarts_after
+              loop: "{{ strongswan_verify_units }}"
+
+            - name: Assert no service restarted while it was up
+              ansible.builtin.assert:
+                that:
+                  - strongswan_restarts_after.results | map(attribute='status.NRestarts') | list == strongswan_restarts_before.results | map(attribute='status.NRestarts') | list
+                  - strongswan_restarts_after.results | map(attribute='status.ActiveState') | unique | list == ['active']
+                fail_msg: >-
+                  A service restarted while it was supposedly up, so `active` was hiding a crash loop.
+                  Before:
+                  {% for unit, restarts in strongswan_verify_units | zip(strongswan_restarts_before.results | map(attribute='status.NRestarts')) %}{{ restarts }} ({{ unit }}){% if not loop.last %}, {% endif %}{% endfor %},
+                  after:
+                  {% for unit, restarts in strongswan_verify_units | zip(strongswan_restarts_after.results | map(attribute='status.NRestarts')) %}{{ restarts }} ({{ unit }}){% if not loop.last %}, {% endif %}{% endfor %}
+                success_msg: >-
+                  None of the services restarted over 45 seconds of watching (restarts so far:
+                  {% for unit, restarts in strongswan_verify_units | zip(strongswan_restarts_after.results | map(attribute='status.NRestarts')) %}{{ restarts }} ({{ unit }}){% if not loop.last %}, {% endif %}{% endfor %})
+
+        - name: Show the strongSwan verification summary
+          ansible.builtin.debug:
+            msg:
+              - "strongSwan systemd: {% for unit, state in strongswan_verify_units | zip(strongswan_services.results | map(attribute='status.ActiveState')) %}{{ unit }} ({{ state }}){% if not loop.last %}, {% endif %}{% endfor %}"
+              - "strongSwan restarts: {% for unit, restarts in strongswan_verify_units | zip(strongswan_restarts_after.results | map(attribute='status.NRestarts')) %}{{ restarts }} ({{ unit }}){% if not loop.last %}, {% endif %}{% endfor %}"
+              - "strongSwan version: {{ strongswan_daemon_version.stdout_lines | first }}"
+              - "strongSwan tunnel: {{ strongswan_sas.stdout_lines | first }}"
+              - "strongSwan tunnel packets inbound: {{ strongswan_tunnel_packets_in }}"
+
+      rescue:
+        # Whatever went wrong, the reason is almost always in the systemd service log.
+        - name: Retrieve the strongSwan systemd service log
+          ansible.builtin.command:
+            cmd: journalctl --no-pager --output=cat --unit=strongswan.service
+          register: strongswan_service_log
+          changed_when: false
+
+        - name: Show the strongSwan systemd service log
+          ansible.builtin.debug:
+            var: strongswan_service_log.stdout_lines
+
+        - name: Retrieve the peer's log
+          ansible.builtin.command:
+            cmd: docker logs {{ strongswan_molecule_peer_name }}
+          register: strongswan_peer_log
+          changed_when: false
+          failed_when: false
+
+        - name: Show the peer's log
+          ansible.builtin.debug:
+            var: strongswan_peer_log.stderr_lines
+
+        - name: Fail because verification did not pass
+          ansible.builtin.fail:
+            msg: "strongSwan verification failed. The systemd service log is printed above."
+
+      always:
+        - name: Remove the peer
+          ansible.builtin.command:
+            cmd: docker rm --force {{ strongswan_molecule_peer_name }}
+          changed_when: true
+          failed_when: false

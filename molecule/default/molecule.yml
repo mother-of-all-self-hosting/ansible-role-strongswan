@@ -1,0 +1,126 @@
+# SPDX-FileCopyrightText: 2026 Slavi Pantaleev
+# SPDX-FileCopyrightText: 2026 spatterlight
+# SPDX-FileCopyrightText: 2026 Suguru Hirahara
+#
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+---
+dependency:
+  name: galaxy
+  options:
+    requirements-file: requirements.yml
+    force: true
+driver:
+  name: docker
+platforms:
+  - name: strongswan-${MOLECULE_DISTRO:-ubuntu2604}-default
+    image: "geerlingguy/docker-${MOLECULE_DISTRO:-ubuntu2604}-ansible:latest"
+    command: ${MOLECULE_DOCKER_COMMAND:-""}
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+      # Docker inside the instance stores images via containerd. Its storage
+      # cannot use overlay on top of the instance's own overlay filesystem, so a
+      # volume puts it on a real filesystem.
+      - /var/lib/containerd
+    # Remove volumes along with the instance, so that local runs do not leave
+    # gigabytes behind.
+    keep_volumes: false
+    cgroupns_mode: host
+    privileged: true
+    pre_build_image: true
+provisioner:
+  name: ansible
+  config_options:
+    defaults:
+      callback_result_format: yaml
+  inventory:
+    group_vars:
+      all:
+        # Helper variables
+        strongswan_debug_service_enabled: false
+        strongswan_restarts_check_enabled: true
+
+        # The host directory mounted into the container through
+        # `strongswan_container_additional_volumes_custom`, and the file placed in it by
+        # prepare.yml. Reading that file from inside the container is what
+        # proves the additional volumes reach the systemd unit rather than
+        # being merely declared in defaults/main.yml.
+        #
+        # It is mounted at /etc/swanctl/conf.d, so that the connection snippet
+        # prepare.yml also puts there proves the `include` in swanctl.conf.
+        strongswan_molecule_extra_volume_src: /strongswan-molecule-extra
+        strongswan_molecule_extra_volume_dst: /etc/swanctl/conf.d
+        strongswan_molecule_extra_volume_marker: only-a-real-bind-mount-can-read-this
+        strongswan_molecule_marker_filename: strongswan-molecule-marker.txt
+        strongswan_molecule_conf_d_connection_name: molecule-conf-d
+
+        # The IPsec peer that verify.yml starts next to the role's container, on
+        # the role's container network, to establish a real tunnel with it. The
+        # identities and the pre-shared key below are what both sides agree on.
+        strongswan_molecule_peer_name: strongswan-molecule-peer
+        strongswan_molecule_peer_path: /strongswan-molecule-peer
+        strongswan_molecule_local_id: strongswan.molecule
+        strongswan_molecule_peer_id: peer.molecule
+        strongswan_molecule_psk: molecule-pre-shared-key
+        strongswan_molecule_connection_name: molecule
+
+        # Variables for strongSwan
+        #
+        # Deliberately not 1000: a uid that exists in the test image by accident
+        # would hide a directory the role left unreadable.
+        strongswan_uid: 1717
+        strongswan_gid: 1717
+
+        # Neither the role's defaults nor each other's, so that verify.yml can
+        # tell that each host port came from its own variable.
+        strongswan_container_ike_host_bind_port: "51500"
+        strongswan_container_nat_traversal_host_bind_port: "54500"
+
+        strongswan_container_additional_volumes_custom:
+          - type: bind
+            src: "{{ strongswan_molecule_extra_volume_src }}"
+            dst: "{{ strongswan_molecule_extra_volume_dst }}"
+            options: readonly
+
+        # The role's side of the tunnel responds to the peer. Transport mode
+        # protects the traffic between the two containers' own addresses, so no
+        # extra routes or addresses are needed to send a ping through the tunnel.
+        strongswan_swanctl_conf: |
+          connections {
+            {{ strongswan_molecule_connection_name }} {
+              version = 2
+              local {
+                auth = psk
+                id = {{ strongswan_molecule_local_id }}
+              }
+              remote {
+                auth = psk
+                id = {{ strongswan_molecule_peer_id }}
+              }
+              children {
+                {{ strongswan_molecule_connection_name }} {
+                  mode = transport
+                  esp_proposals = aes256-sha256
+                }
+              }
+              proposals = aes256-sha256-modp2048
+            }
+          }
+
+          secrets {
+            ike-{{ strongswan_molecule_connection_name }} {
+              id-1 = {{ strongswan_molecule_local_id }}
+              id-2 = {{ strongswan_molecule_peer_id }}
+              secret = "{{ strongswan_molecule_psk }}"
+            }
+          }
+
+        # Neither the role's default of UTC nor the test host's zone, so
+        # that the timezone the container ends up in can only have come from
+        # templates/env.j2.
+        strongswan_environment_variables_tz: Asia/Tokyo
+  env:
+    # Workaround for https://github.com/ansible/molecule/issues/4391
+    ANSIBLE_ROLES_PATH: ${MOLECULE_PROJECT_DIRECTORY}/..:/.ansible/roles:/usr/share/ansible/roles:/etc/ansible/roles:~/.ansible/roles
+verifier:
+  name: ansible

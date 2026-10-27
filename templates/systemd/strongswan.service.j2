@@ -1,0 +1,79 @@
+{#
+SPDX-FileCopyrightText: 2023-2025 Slavi Pantaleev
+SPDX-FileCopyrightText: 2024 Nikita Chernyi
+SPDX-FileCopyrightText: 2025 Suguru Hirahara
+SPDX-FileCopyrightText: 2026 spatterlight
+
+SPDX-License-Identifier: AGPL-3.0-or-later
+#}
+
+[Unit]
+Description=strongSwan ({{ strongswan_identifier }})
+{% for service in strongswan_systemd_required_services_list %}
+Requires={{ service }}
+After={{ service }}
+{% endfor %}
+{% for service in strongswan_systemd_wanted_services_list %}
+Wants={{ service }}
+{% endfor %}
+DefaultDependencies=no
+
+[Service]
+Type=simple
+Environment="HOME={{ devture_systemd_docker_base_systemd_unit_home_path }}"
+ExecStartPre={{ devture_systemd_docker_base_host_command_sh }} -c '{{ strongswan_container_cleanup_command | trim | replace("\n", " ") }}'
+
+{#
+  The charon daemon runs as root inside the container, because it needs NET_ADMIN to manage
+  the IPsec policies and security associations of the kernel. The configuration files are
+  still owned by strongswan_uid:strongswan_gid on the host, which is what DAC_READ_SEARCH lets it read.
+  NET_BIND_SERVICE lets it bind ports 500 and 4500 with host networking, where Docker does not lift the
+  privileged port limit as it does for container networks.
+#}
+ExecStartPre={{ devture_systemd_docker_base_host_command_docker }} create \
+      --rm \
+      --name={{ strongswan_identifier }} \
+      --log-driver=none \
+      --cap-drop=ALL \
+      --cap-add=DAC_READ_SEARCH \
+      --cap-add=NET_ADMIN \
+      --cap-add=NET_BIND_SERVICE \
+      --read-only \
+      --network={{ strongswan_container_network }} \
+      {% if strongswan_container_ike_host_bind_port %}
+      -p {{ strongswan_container_ike_host_bind_port }}:500/udp \
+      {% endif %}
+      {% if strongswan_container_nat_traversal_host_bind_port %}
+      -p {{ strongswan_container_nat_traversal_host_bind_port }}:4500/udp \
+      {% endif %}
+      --env-file={{ strongswan_base_path }}/env \
+      --mount type=bind,src={{ strongswan_config_path }}/strongswan.conf,dst=/etc/strongswan.conf,ro \
+      --mount type=bind,src={{ strongswan_config_path }}/swanctl.conf,dst=/etc/swanctl/swanctl.conf,ro \
+      {% for volume in strongswan_container_additional_volumes %}
+      --mount type={{ volume.type | default('bind' if '/' in volume.src else 'volume') }},src={{ volume.src }},dst={{ volume.dst }}{{ (',' + volume.options) if volume.options | default('') else '' }} \
+      {% endfor %}
+      --tmpfs=/run:rw,noexec,nosuid,size={{ strongswan_container_tmpfs_run_size }} \
+      {% for arg in strongswan_container_extra_arguments %}
+      {{ arg }} \
+      {% endfor %}
+      {{ strongswan_container_image_self_build_name if strongswan_container_image_self_build else strongswan_container_image }} \
+      /usr/libexec/ipsec/charon \
+      {% for arg in strongswan_process_extra_arguments %}
+      {{ arg }} \
+      {% endfor %}
+
+{% for network in strongswan_container_additional_networks %}
+ExecStartPre={{ devture_systemd_docker_base_host_command_docker }} network connect {{ network }} {{ strongswan_identifier }}
+{% endfor %}
+
+ExecStart={{ devture_systemd_docker_base_host_command_docker }} start --attach {{ strongswan_identifier }}
+
+ExecStop=-{{ devture_systemd_docker_base_host_command_sh }} -c '{{ devture_systemd_docker_base_host_command_docker }} stop -t {{ devture_systemd_docker_base_container_stop_grace_time_seconds }} {{ strongswan_identifier }} 2>/dev/null || true'
+ExecStop=-{{ devture_systemd_docker_base_host_command_sh }} -c '{{ devture_systemd_docker_base_host_command_docker }} rm {{ strongswan_identifier }} 2>/dev/null || true'
+
+Restart=always
+RestartSec=30
+SyslogIdentifier={{ strongswan_identifier }}
+
+[Install]
+WantedBy=multi-user.target

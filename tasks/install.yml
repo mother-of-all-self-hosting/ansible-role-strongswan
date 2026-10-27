@@ -1,0 +1,126 @@
+# SPDX-FileCopyrightText: 2023 Slavi Pantaleev
+# SPDX-FileCopyrightText: 2026 Suguru Hirahara
+# SPDX-FileCopyrightText: 2026 spatterlight
+#
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+---
+- name: Ensure strongSwan paths exist
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0750"
+    owner: "{{ strongswan_uid }}"
+    group: "{{ strongswan_gid }}"
+  with_items:
+    - "{{ strongswan_base_path }}"
+    - "{{ strongswan_config_path }}"
+
+- name: Ensure strongSwan support files installed
+  ansible.builtin.template:
+    src: "{{ role_path }}/templates/{{ item }}.j2"
+    dest: "{{ strongswan_base_path }}/{{ item }}"
+    mode: "0640"
+    owner: "{{ strongswan_uid }}"
+    group: "{{ strongswan_gid }}"
+  with_items:
+    - env
+  register: strongswan_support_files_result
+
+- name: Ensure strongSwan configuration files installed
+  ansible.builtin.template:
+    src: "{{ role_path }}/templates/{{ item }}.j2"
+    dest: "{{ strongswan_config_path }}/{{ item }}"
+    mode: "0640"
+    owner: "{{ strongswan_uid }}"
+    group: "{{ strongswan_gid }}"
+  with_items:
+    - strongswan.conf
+    - swanctl.conf
+  register: strongswan_config_files_result
+
+- name: Run if self-building of strongSwan container image is not enabled
+  when: "not strongswan_container_image_self_build | bool"
+  block:
+    - name: Ensure strongSwan container image is pulled via community.docker.docker_image_pull
+      when: devture_systemd_docker_base_container_image_pull_method == 'ansible-module'
+      community.docker.docker_image_pull:
+        name: "{{ strongswan_container_image }}"
+        pull: always
+      register: strongswan_container_image_pull_result_ansible_module
+      retries: "{{ devture_playbook_help_container_retries_count }}"
+      delay: "{{ devture_playbook_help_container_retries_delay }}"
+      until: strongswan_container_image_pull_result_ansible_module is not failed
+
+    - name: Ensure strongSwan container image is pulled via ansible.builtin.command
+      when: devture_systemd_docker_base_container_image_pull_method == 'command'
+      ansible.builtin.command:
+        cmd: "{{ devture_systemd_docker_base_host_command_docker }} pull {{ strongswan_container_image }}"
+      register: strongswan_container_image_pull_result_command
+      retries: "{{ devture_playbook_help_container_retries_count }}"
+      delay: "{{ devture_playbook_help_container_retries_delay }}"
+      until: strongswan_container_image_pull_result_command is not failed
+      changed_when: "'Downloaded newer image' in strongswan_container_image_pull_result_command.stdout"
+
+- name: Run if self-building of strongSwan container image is enabled
+  when: "strongswan_container_image_self_build | bool"
+  block:
+    - name: Ensure strongSwan repository is present on self-build
+      ansible.builtin.git:
+        repo: "{{ strongswan_container_image_self_build_repo }}"
+        version: "{{ strongswan_container_image_self_build_repo_version }}"
+        dest: "{{ strongswan_container_image_self_build_src_files_path }}"
+        force: "yes"
+      register: strongswan_git_pull_results
+
+    - name: Ensure strongSwan container image is built
+      community.docker.docker_image_build:
+        name: "{{ strongswan_container_image_self_build_name }}"
+        dockerfile: "{{ strongswan_container_image_self_build_repo_dockerfile_path }}"
+        path: "{{ strongswan_container_image_self_build_src_files_path }}"
+        pull: true
+        rebuild: "{{ 'always' if strongswan_git_pull_results.changed | bool else 'never' }}"
+      register: strongswan_container_image_build_result
+
+- name: Ensure strongSwan container network is created
+  when: strongswan_container_network not in ['', 'host']
+  block:
+    - name: Ensure strongSwan container network is created via community.docker.docker_network
+      when: devture_systemd_docker_base_container_network_creation_method == 'ansible-module'
+      community.docker.docker_network:
+        enable_ipv6: "{{ devture_systemd_docker_base_ipv6_enabled }}"
+        name: "{{ strongswan_container_network }}"
+        driver: bridge
+        driver_options: "{{ devture_systemd_docker_base_container_networks_driver_options }}"
+      register: strongswan_network_creation_result
+
+    - name: Ensure strongSwan container network is created via ansible.builtin.command
+      when: devture_systemd_docker_base_container_network_creation_method == 'command'
+      ansible.builtin.command:
+        cmd: >-
+          {{ devture_systemd_docker_base_host_command_docker }} network create
+          {% if devture_systemd_docker_base_ipv6_enabled %}--ipv6{% endif %}
+          {{ devture_systemd_docker_base_container_networks_driver_options_string }}
+          {{ strongswan_container_network }}
+      register: strongswan_network_creation_result
+      changed_when: strongswan_network_creation_result.rc == 0
+      failed_when: strongswan_network_creation_result.rc != 0 and 'already exists' not in strongswan_network_creation_result.stderr
+
+- name: Ensure strongSwan systemd service is present
+  ansible.builtin.template:
+    src: "{{ role_path }}/templates/systemd/strongswan.service.j2"
+    dest: "{{ devture_systemd_docker_base_systemd_path }}/{{ strongswan_identifier }}.service"
+    mode: "0644"
+  register: strongswan_systemd_service_result
+
+- name: Determine whether strongSwan needs a restart
+  ansible.builtin.set_fact:
+    strongswan_restart_necessary: >-
+      {{
+        strongswan_support_files_result.changed | default(false)
+        or strongswan_config_files_result.changed | default(false)
+        or strongswan_systemd_service_result.changed | default(false)
+        or strongswan_container_image_pull_result_ansible_module.changed | default(false)
+        or strongswan_container_image_pull_result_command.changed | default(false)
+        or strongswan_container_image_build_result.changed | default(false)
+      }}
