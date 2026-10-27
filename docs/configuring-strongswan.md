@@ -22,7 +22,7 @@ SPDX-License-Identifier: AGPL-3.0-or-later
 
 This is an [Ansible](https://www.ansible.com/) role which installs [strongSwan](https://www.strongswan.org/) to run as a [Docker](https://www.docker.com/) container wrapped in a systemd service.
 
-strongSwan is an IPsec-based VPN solution. The [container image](https://hub.docker.com/r/strongx509/strongswan) used by this role supports IKEv2 only, with a limited set of plugins.
+strongSwan is an IPsec-based VPN solution. The container image used by this role supports IKEv2 only, with the plugins listed in its [Dockerfile](https://github.com/strongX509/docker/blob/master/strongswan/Dockerfile).
 
 See the project's [documentation](https://docs.strongswan.org/) to learn what strongSwan does and why it might be useful to you.
 
