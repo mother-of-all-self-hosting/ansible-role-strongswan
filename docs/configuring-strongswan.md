@@ -112,8 +112,6 @@ strongswan_container_additional_volumes_custom:
     options: readonly
 ```
 
-Configuration snippets mounted at `/etc/swanctl/conf.d` are loaded as well, so `strongswan_swanctl_conf` can be left empty if all of the configuration lives there.
-
 ### Extending the configuration
 
 There are some additional things you may wish to configure about the service.
